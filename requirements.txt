@@ -1,0 +1,9 @@
+#python 3.10
+#python -m venv myenv
+#source myenv/bin/activate
+#pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121
+#pip install unsloth[colab-new]
+#pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes
+numpy==1.24.3
+pandas
+pyarrow
