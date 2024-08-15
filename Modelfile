@@ -1,4 +1,4 @@
-FROM mervinpraison/Llama-3.1-8B-bnb-4bit-python/unsloth.Q5_K_M.gguf
+FROM muhammad-albasha/Llama-3.1-8B-python/unsloth.Q5_K_M.gguf
 
 TEMPLATE """Below are some instructions that describe some tasks. Write responses that appropriately complete each request.{{ if .Prompt }}
 

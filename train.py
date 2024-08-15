@@ -6,10 +6,9 @@ from datasets import load_dataset
 from trl import SFTTrainer
 from transformers import TrainingArguments
 from unsloth import is_bfloat16_supported
-import traceback
 
 # 1. Configuration
-max_seq_length = 1024
+max_seq_length = 2048
 dtype = None
 load_in_4bit = True 
 alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -25,7 +24,7 @@ alpaca_prompt = """Below is an instruction that describes a task, paired with an
 
 instruction = "Create a function to calculate the sum of a sequence of integers."
 input = "[1, 2, 3, 4, 5]"
-huggingface_model_name = "muhammad-albasha/Llama-3.1-8B"
+huggingface_model_name = "muhammadßalbasha/Llama-3.1-8B-python"
 
 # 2. Before Training
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -36,13 +35,13 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     token = os.getenv("HF_TOKEN")
 )
 
-FastLanguageModel.for_inference(model)
+FastLanguageModel.for_inference(model) # Enable native 2x faster inference
 inputs = tokenizer(
 [
     alpaca_prompt.format(
-        instruction,
-        input,
-        "",
+        instruction, # instruction
+        input, # input
+        "", # output - leave this blank for generation!
     )
 ], return_tensors = "pt").to("cuda")
 
@@ -50,7 +49,8 @@ text_streamer = TextStreamer(tokenizer)
 _ = model.generate(**inputs, streamer = text_streamer, max_new_tokens = 1000)
 
 # 3. Load data
-EOS_TOKEN = tokenizer.eos_token
+
+EOS_TOKEN = tokenizer.eos_token # Must add EOS_TOKEN
 def formatting_prompts_func(examples):
     instructions = examples["instruction"]
     inputs       = examples["input"]
@@ -60,23 +60,23 @@ def formatting_prompts_func(examples):
         text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
         texts.append(text)
     return { "text" : texts, }
-
+pass
 dataset = load_dataset("iamtarun/python_code_instructions_18k_alpaca", split = "train")
 dataset = dataset.map(formatting_prompts_func, batched = True,)
 
 # 4. Training
 model = FastLanguageModel.get_peft_model(
     model,
-    r = 16,
+    r = 16, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                       "gate_proj", "up_proj", "down_proj",],
     lora_alpha = 16,
-    lora_dropout = 0,
-    bias = "none",
-    use_gradient_checkpointing = "unsloth",
+    lora_dropout = 0, # Supports any, but = 0 is optimized
+    bias = "none",    # Supports any, but = "none" is optimized
+    use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
     random_state = 3407,
-    use_rslora = False,
-    loftq_config = None,
+    use_rslora = False,  # We support rank stabilized LoRA
+    loftq_config = None, # And LoftQ
 )
 
 trainer = SFTTrainer(
@@ -86,11 +86,12 @@ trainer = SFTTrainer(
     dataset_text_field = "text",
     max_seq_length = max_seq_length,
     dataset_num_proc = 2,
-    packing = False,
+    packing = False, # Can make training 5x faster for short sequences.
     args = TrainingArguments(
-        per_device_train_batch_size = 1,
-        gradient_accumulation_steps = 8,
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 4,
         warmup_steps = 5,
+        # num_train_epochs = 1, # Set this for 1 full training run.
         max_steps = 100,
         learning_rate = 2e-4,
         fp16 = not is_bfloat16_supported(),
@@ -125,85 +126,56 @@ print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
 print(f"Peak reserved memory % of max memory = {used_percentage} %.")
 print(f"Peak reserved memory for training % of max memory = {lora_percentage} %.")
 
+
 # 5. After Training
-FastLanguageModel.for_inference(model)
+FastLanguageModel.for_inference(model) # Enable native 2x faster inference
 inputs = tokenizer(
 [
     alpaca_prompt.format(
-        instruction,
-        input,
-        "",
+        instruction, # instruction
+        input, # input
+        "", # output - leave this blank for generation!
     )
 ], return_tensors = "pt").to("cuda")
 
 text_streamer = TextStreamer(tokenizer)
 _ = model.generate(**inputs, streamer = text_streamer, max_new_tokens = 1000)
 
-# 6. Saving and Pushing to Hub
-
-# Local saving
-print("Saving model locally...")
-model.save_pretrained("lora_model")
+# 6. Saving
+model.save_pretrained("lora_model") # Local saving
 tokenizer.save_pretrained("lora_model")
+model.push_to_hub(huggingface_model_name, token = os.getenv("HF_TOKEN")) 
+tokenizer.push_to_hub(huggingface_model_name, token = os.getenv("HF_TOKEN"))
 
-# Try saving merged model locally
-print("Attempting to save merged model locally...")
-try:
-    model.save_pretrained_merged("local_merged_model", tokenizer, save_method="merged_16bit")
-    print("Successfully saved merged model locally.")
-except Exception as e:
-    print(f"Error saving merged model locally: {e}")
-    traceback.print_exc()
-
-# Push to Hub
-print("Pushing model to Hub...")
-try:
-    model.push_to_hub(huggingface_model_name, token=os.getenv("HF_TOKEN"))
-    tokenizer.push_to_hub(huggingface_model_name, token=os.getenv("HF_TOKEN"))
-    print("Successfully pushed model and tokenizer to Hub.")
-except Exception as e:
-    print(f"Error pushing to Hub: {e}")
-    traceback.print_exc()
-
-# Try pushing merged model to Hub
-print("Attempting to push merged model to Hub...")
-try:
-    model.push_to_hub_merged(huggingface_model_name, tokenizer, save_method="merged_16bit", token=os.getenv("HF_TOKEN"))
-    print("Successfully pushed merged model to Hub.")
-except Exception as e:
-    print(f"Error pushing merged model to Hub: {e}")
-    traceback.print_exc()
-
-# Optional: Uncomment these sections if you want to try other saving methods
+# Merge to 16bit
+if True: model.save_pretrained_merged("model", tokenizer, save_method = "merged_16bit",)
+if True: model.push_to_hub_merged(huggingface_model_name, tokenizer, save_method = "merged_16bit", token = os.getenv("HF_TOKEN"))
 
 # # Merge to 4bit
-# if True:
-#     try:
-#         model.save_pretrained_merged("model_4bit", tokenizer, save_method="merged_4bit")
-#         model.push_to_hub_merged(huggingface_model_name, tokenizer, save_method="merged_4bit", token=os.getenv("HF_TOKEN"))
-#         print("Successfully saved and pushed 4-bit merged model.")
-#     except Exception as e:
-#         print(f"Error with 4-bit merged model: {e}")
-#         traceback.print_exc()
+# if True: model.save_pretrained_merged("model", tokenizer, save_method = "merged_4bit",)
+# if True: model.push_to_hub_merged(huggingface_model_name, tokenizer, save_method = "merged_4bit", token = os.getenv("HF_TOKEN"))
 
 # # Just LoRA adapters
-# if True:
-#     try:
-#         model.save_pretrained_merged("model_lora", tokenizer, save_method="lora")
-#         model.push_to_hub_merged(huggingface_model_name, tokenizer, save_method="lora", token=os.getenv("HF_TOKEN"))
-#         print("Successfully saved and pushed LoRA adapters.")
-#     except Exception as e:
-#         print(f"Error with LoRA adapters: {e}")
-#         traceback.print_exc()
+# if True: model.save_pretrained_merged("model", tokenizer, save_method = "lora",)
+# if True: model.push_to_hub_merged(huggingface_model_name, tokenizer, save_method = "lora", token = os.getenv("HF_TOKEN"))
 
-# # Save to 8bit Q8_0 GGUF
-# if True:
-#     try:
-#         model.save_pretrained_gguf("model_gguf_8bit", tokenizer)
-#         model.push_to_hub_gguf(huggingface_model_name, tokenizer, token=os.getenv("HF_TOKEN"))
-#         print("Successfully saved and pushed 8-bit GGUF model.")
-#     except Exception as e:
-#         print(f"Error with 8-bit GGUF model: {e}")
-#         traceback.print_exc()
+# # Save to 8bit Q8_0
+# if True: model.save_pretrained_gguf("model", tokenizer,)
+# if True: model.push_to_hub_gguf(huggingface_model_name, tokenizer, token = os.getenv("HF_TOKEN"))
 
-print("All operations completed.")
+# # Save to 16bit GGUF
+# if True: model.save_pretrained_gguf("model", tokenizer, quantization_method = "f16")
+# if True: model.push_to_hub_gguf(huggingface_model_name, tokenizer, quantization_method = "f16", token = os.getenv("HF_TOKEN"))
+
+# # Save to q4_k_m GGUF
+# if True: model.save_pretrained_gguf("model", tokenizer, quantization_method = "q4_k_m")
+# if True: model.push_to_hub_gguf(huggingface_model_name, tokenizer, quantization_method = "q4_k_m", token = os.getenv("HF_TOKEN"))
+
+# # Save to multiple GGUF options - much faster if you want multiple!
+# if True:
+#     model.push_to_hub_gguf(
+#         huggingface_model_name, # Change hf to your username!
+#         tokenizer,
+#         quantization_method = ["q4_k_m", "q8_0", "q5_k_m",],
+#         token = os.getenv("HF_TOKEN")
+#     )
